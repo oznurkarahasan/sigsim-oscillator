@@ -1,17 +1,15 @@
-# 47 kHz Signal-Chain Simulator
+# 47 kHz Signal-Chain Simulator + Detector Test Bench
 
 Headless C++ simulation of the analog signal path that a 47 kHz OOK
 receiver's ADC would actually see: carrier + white noise + DC offset,
 through a single-pole RC anti-alias filter, through an N-bit ADC
 quantizer, with a slowly-fading amplitude envelope and a 500-baud-style
-on/off test modulation. This is deliberately **just the signal source /
-front end** — no detectors, no GUI. It's the ground truth generator that
-detector code (biquad / Goertzel / autocorrelation) gets built against
-next, and it's meant to be trusted before that happens.
-
-No GUI dependency by design: everything is verified from the command
-line first (`tools/verify.py`), so correctness doesn't depend on Dear
-ImGui/implot ever getting wired up.
+on/off test modulation — plus three independent bit detectors (biquad
+bandpass, Goertzel, autocorrelation) scored against ground truth. This is
+deliberately **signal source + detectors, no GUI yet**. Everything is
+verified from the command line first (`tools/verify.py`), so correctness
+doesn't depend on Dear ImGui/implot ever getting wired up (that's the next
+phase — see [Not in this deliverable](#not-in-this-deliverable)).
 
 ## Build
 
@@ -20,10 +18,18 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j4
 ```
 
-Produces `build/sigsim_dump`, a CLI that dumps the signal chain as CSV.
+Produces three CLIs:
+
+| Binary | Purpose |
+|---|---|
+| `build/sigsim_dump` | Dumps the raw signal chain (no detectors) as CSV |
+| `build/detect_dump` | Dumps the signal chain **and** all three detectors' output per sample, as CSV |
+| `build/detect_sweep` | Headless BER-vs-parameter sweep — the actual biquad/Goertzel/autocorrelation comparison |
 
 ```
 ./build/sigsim_dump --help
+./build/detect_dump --help
+./build/detect_sweep --help
 ```
 
 Example: default parameters, 25ms, to a file:
@@ -37,7 +43,24 @@ CSV columns: `time_s, ideal_v, pre_adc_v, adc_code, adc_v, bit_truth, fade_mult`
 `pre_adc_v` is what the ADC pin actually sees (post-noise, post-RC,
 pre-quantization), `adc_code`/`adc_v` are the quantized reading, and
 `bit_truth`/`fade_mult` are the ground-truth OOK bit and fade multiplier
-for later scoring a detector's bit-error-rate against.
+that detectors are scored against.
+
+Example: compare all three detectors' bit-error-rate across a noise sweep:
+
+```
+./build/detect_sweep --sweep-param noise-mv --values 10,15,20,25,30,35,40,50,60,80 \
+    --symbols-per-point 2000 --seed 1 --out sweep.csv
+```
+
+produces `sweep_value,ber_biquad,ber_goertzel,ber_autocorr` — one row per
+swept value. `--sweep-param` also accepts `fade-max`.
+
+On MinGW toolchains, every binary is statically linked against
+libstdc++/libgcc (`CMakeLists.txt`'s `sigsim_harden_mingw()`), so it
+doesn't depend on which MinGW distribution's DLLs happen to be first on
+`PATH` at runtime — a machine with more than one MinGW install (e.g. Git
+for Windows' bundled toolchain ahead of the one that compiled the binary)
+can otherwise load an ABI-incompatible libstdc++ and crash immediately.
 
 ## Verify
 
@@ -45,14 +68,26 @@ for later scoring a detector's bit-error-rate against.
 python3 tools/verify.py
 ```
 
-Runs the binary through six checks and reports PASS/FAIL for each —
-carrier frequency accuracy, noise RMS calibration, ADC clipping/LSB
-size, the RC filter's -3dB point, and (the important one) that noise
-between Fs/2 and the RC cutoff actually aliases back into the decimated
-output when the cutoff is set above Fs/2. Needs `numpy` (`pip install
-numpy --break-system-packages` if missing).
+Runs the built binaries through 16 checks and reports PASS/FAIL for each:
 
-Current status: **all 6 checks pass.**
+- **1–6, signal chain**: carrier frequency accuracy, noise RMS calibration,
+  ADC clipping/LSB size, the RC filter's -3dB point, and (the important
+  one) that noise between Fs/2 and the RC cutoff actually aliases back into
+  the decimated output when the cutoff is set above Fs/2, and OOK symbol
+  timing.
+- **7–10, detectors**: biquad's analytic RBJ magnitude response (on- and
+  off-target), Goertzel's on-target convergence and off-target suppression,
+  the autocorrelation fractional-lag fix actually outperforming naive
+  integer-lag rounding, and `detect_sweep`'s BER trending with noise
+  (not stuck at a constant value regardless of noise — see
+  [Detector implementation notes](#detector-implementation-notes) for why
+  that distinction mattered).
+
+Needs `numpy` (`pip install numpy`, or on MSYS2/MinGW,
+`pacman -S mingw-w64-ucrt-x86_64-python-numpy` — whichever `python3`
+resolves to needs to be the one numpy was installed into).
+
+Current status: **all 16 checks pass.**
 
 ## Architecture
 
@@ -75,7 +110,26 @@ One class per stage, each independently testable, tied together by
 | `include/sigsim/AdcQuantizer.h` | Clip to [0, Vref], quantize to N bits |
 | `include/sigsim/SignalChain.h` | Wires the above together; `step()` is the only entry point the rest of the project needs |
 | `src/main.cpp` | CLI harness: parses `Params` from flags, dumps CSV |
-| `tools/verify.py` | Headless correctness checks against the built binary |
+| `tools/verify.py` | Headless correctness checks against the built binaries |
+
+Detectors, each consuming only `AdcSample::adcV` (never the ground-truth
+fields), tied together the same way:
+
+```
+adcV ──▶ [ Biquad | Goertzel | Autocorrelation ] ──▶ PeakTracker (AGC) ──▶ bitDecision
+```
+
+| File | Responsibility |
+|---|---|
+| `include/detect/DetectorTypes.h` | `DetectorOutput` (per-sample result) and `DetectorParams` (every detector tunable) |
+| `include/detect/IDetector.h` | Common interface; `configure()` is safely re-callable at runtime |
+| `include/detect/PeakTracker.h` | Shared AGC/peak-follower: normalizes each detector's own-units magnitude to a 0..1-ish level a single shared `thresholdFrac` can be applied to |
+| `include/detect/BiquadDetector.h` | RBJ constant-0dB-peak-gain bandpass → rectify → envelope (reuses `AnalogFrontEnd`) |
+| `include/detect/GoertzelDetector.h` | Block-based single-bin power, block length tied to the OOK symbol length |
+| `include/detect/AutocorrDetector.h` | Fractional-lag autocorrelation, O(1)-per-sample sliding window |
+| `include/detect/BitScorer.h` | Per-symbol majority-vote BER scoring against ground truth, with guard band + per-detector latency compensation |
+| `src/detect_dump.cpp` | CLI: signal chain + all three detectors, dumps CSV |
+| `src/detect_sweep.cpp` | CLI: BER-vs-parameter sweep, dumps CSV — the actual comparison deliverable |
 
 ### Why oversampling + decimation, not filtering directly at Fs
 
@@ -133,9 +187,79 @@ toward or above 100 kHz. Both are meaningful test conditions — the point
 of exposing it as a live parameter is to compare them, not to hide a bad
 default.
 
+## Detector implementation notes
+
+A few things the detectors get right that aren't obvious from the
+formulas alone, each verified in `tools/verify.py` checks 7–10:
+
+**AC-coupling.** `AdcSample::adcV` carries a ~1.6V DC offset next to a
+~20mV carrier. Goertzel and autocorrelation both bin/correlate their raw
+input, so without removing that offset first, it dominates regardless of
+whether the carrier is actually present (autocorrelation in particular
+would read ~0.99 correlation on pure noise). Both detectors AC-couple
+their input by subtracting a slow `AnalogFrontEnd` low-pass estimate of
+the offset before processing — biquad doesn't need this, its own bandpass
+response already rejects DC by construction.
+
+**Guard-band latency compensation.** `BitScorer`'s guard band (trimming
+the first/last 20% of a symbol from the majority vote) only covers small
+edge jitter — it can't absorb a detector's *systematic* decision latency
+when that latency is comparable to a full symbol. Goertzel's block-hold
+value is revealed only at the start of the *next* symbol (a full block
+late, deterministically); autocorrelation's sliding window has similar
+smearing. `BitScorer::configure()` takes a `truthDelaySamples` parameter
+so each detector's own known latency (`GoertzelDetector::blockSamples()`,
+`AutocorrDetector::windowSamples()/2`) is compensated before the guard
+band ever runs — without this, Goertzel/autocorrelation score
+near-chance BER *independent of noise level*, which is a wiring bug, not
+physics.
+
+**Autocorrelation window length.** Deliberately *not* tied 1:1 to the OOK
+symbol length the way `goertzelBlockMs` is (default `autocorrWindowMs =
+0.25`, a quarter of the 1ms symbol). A sliding window as long as the
+off-gap itself can never fully flush the previous on-pulse's carrier
+before the next on-pulse arrives — verified empirically by feeding pure
+noise (correlation correctly settles to ~0 once the window fills) versus
+real OOK cycling with a 1ms window (correlation stays elevated through
+nearly the entire off period, because the window legitimately still
+contains real carrier samples — not a bug, just too long a memory for the
+gap it has to forget within).
+
+**`PeakTracker`'s decay is calibrated to the caller's actual update
+rate, not the raw sample rate.** Goertzel calls `PeakTracker::update()`
+once per *block* (every `blockN_` samples), not once per sample, since
+`rawMagnitude` only changes that often. Configuring the tracker at the
+raw `sampleRateHz` would make the configured `peakTauMs` `blockN_` times
+too slow in wall-clock terms — with the default 200-sample block, a
+nominal 20ms tau silently becomes ~4 seconds, so one inflated startup
+block (before the signal chain settles) corrupts AGC normalization for
+the entire run. `GoertzelDetector` configures its tracker against
+`sampleRateHz / blockN_` instead.
+
+**The fractional-lag fix needed its own fix.** Linearly interpolating
+`(1-frac)*r(lagLo) + frac*r(lagHi)` between the two nearest integer lags
+*underestimates* the true correlation peak, because correlation-vs-lag is
+cosine-shaped (concave near its peak) for a near-monochromatic signal — a
+linear blend is a chord under that arc. At this project's own default
+47.4kHz/200kHz ratio (`frac=0.219`), that linear blend actually scored
+*worse* than plain nearest-integer-lag rounding — the opposite of the
+fix's purpose. Since the target frequency (hence its phase increment
+`omega`) is known exactly, `AutocorrDetector` instead solves for the true
+peak analytically from the two measured lag correlations:
+`rho = sqrt(rLo^2 + ((rLo*cos(omega) - rHi)/sin(omega))^2)`.
+
+**`detect_sweep`'s BER-vs-noise sanity numbers.** At `noise-mv=10` (easy),
+all three detectors score under 1% BER. At `noise-mv=4000` (very hard),
+all three approach chance level (~30–48%) — deliberately not the
+`noise-mv=200` figure one might expect from "signal buried below noise":
+all three detectors get real processing gain from integrating over many
+carrier cycles (envelope/block/window) against a peak-normalized
+threshold, so 200mV of noise (10x the 20mV carrier) isn't actually enough
+to drive a correctly-working implementation to chance level.
+
 ## Not in this deliverable
 
-Detectors (biquad bandpass, Goertzel, autocorrelation) and the
-ImGui/implot real-time scope are the next phase, built on top of
-`SignalChain::step()`. This zip is the front-end simulation only, per
-your last request.
+The ImGui/implot real-time scope (GUI) is the next phase, built on top of
+`SignalChain::step()` and the `IDetector` implementations here — signal
+chain, all three detectors, and the headless BER comparison harness
+(`detect_sweep`) are already in place and verified.
