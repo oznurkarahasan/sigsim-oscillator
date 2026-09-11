@@ -32,6 +32,9 @@ void printUsage(const char* prog) {
         "   --sig-freq, --sig-amp-mv, --offset-v, --no-fade, --fade-*,\n"
         "   --no-ook, --ook-on-ms, --ook-off-ms, --seed)\n"
         "\n"
+        "  --target-freq-hz <Hz>    detector's assumed carrier freq (default: tracks --sig-freq;\n"
+        "                           pass explicitly to test an off-target tone without also\n"
+        "                           retuning the detectors)\n"
         "  --threshold-frac <x>     shared detector threshold (default 0.5)\n"
         "  --peak-tau-ms <ms>       peak-tracker decay time constant (default 20)\n"
         "  --biquad-q <Q>           biquad bandpass Q (default 8)\n"
@@ -61,6 +64,7 @@ int main(int argc, char** argv) {
     double durationMs = 20.0;
     std::string outPath;
     bool autocorrIntegerLag = false;
+    bool targetFreqOverridden = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -73,7 +77,8 @@ int main(int argc, char** argv) {
         else if (a == "--vref")          p.vrefV = argD(argc, argv, i);
         else if (a == "--noise-mv")      p.noiseRmsMv = argD(argc, argv, i);
         else if (a == "--rc-cutoff")     p.rcCutoffHz = argD(argc, argv, i);
-        else if (a == "--sig-freq")      { p.signalFreqHz = argD(argc, argv, i); dp.targetFreqHz = p.signalFreqHz; }
+        else if (a == "--sig-freq")      { p.signalFreqHz = argD(argc, argv, i); if (!targetFreqOverridden) dp.targetFreqHz = p.signalFreqHz; }
+        else if (a == "--target-freq-hz") { dp.targetFreqHz = argD(argc, argv, i); targetFreqOverridden = true; }
         else if (a == "--sig-amp-mv")    p.signalAmplitudeMv = argD(argc, argv, i);
         else if (a == "--offset-v")      p.offsetV = argD(argc, argv, i);
         else if (a == "--no-fade")       p.fadeEnabled = false;

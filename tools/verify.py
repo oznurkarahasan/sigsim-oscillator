@@ -208,8 +208,12 @@ def rbj_bandpass_gain(f, f0, q, fs_):
     return abs(num / den)
 
 def measure_biquad_raw(test_freq, amp_mv):
+    # --target-freq-hz pinned to biquad_f0 explicitly: --sig-freq alone
+    # would also retune the detector to match, making every "off-target"
+    # tone look on-target.
     dd = run_detect(["--duration-ms", "20", "--noise-mv", "0", "--no-fade", "--no-ook",
                       "--sig-freq", str(test_freq), "--sig-amp-mv", str(amp_mv),
+                      "--target-freq-hz", str(biquad_f0),
                       "--rc-cutoff", "50000000", "--fs", str(fs),
                       "--biquad-q", str(biquad_q)])
     settle = len(dd["biquad_raw"]) // 2  # past both biquad ring-down and envelope-tau settling
@@ -238,6 +242,7 @@ goertzel_amp_mv = 300.0
 def measure_goertzel_raw(test_freq):
     dd = run_detect(["--duration-ms", "20", "--noise-mv", "0", "--no-fade", "--no-ook",
                       "--sig-freq", str(test_freq), "--sig-amp-mv", str(goertzel_amp_mv),
+                      "--target-freq-hz", str(biquad_f0),
                       "--rc-cutoff", "50000000", "--fs", str(fs)])
     settle = len(dd["goertzel_raw"]) // 2
     return dd["goertzel_raw"][settle:].mean()

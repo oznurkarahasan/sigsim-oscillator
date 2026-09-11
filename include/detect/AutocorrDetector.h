@@ -47,6 +47,10 @@ public:
         lagHi_ = lagLo_ + 1;
         frac_  = lagF - lagLo_;
 
+        const double omega = 2.0 * M_PI * p_.targetFreqHz / p_.sampleRateHz;
+        cosOmega_ = std::cos(omega);
+        sinOmega_ = std::sin(omega);
+
         windowLen_ = std::max(2, static_cast<int>(std::lround(p_.sampleRateHz * p_.autocorrWindowMs / 1000.0)));
 
         // Ring buffer needs to look back at most windowLen_ + lagHi_ samples.
@@ -100,7 +104,21 @@ public:
 
         double rawMagnitude;
         if (fractionalLagEnabled_) {
-            rawMagnitude = (1.0 - frac_) * rNormLo + frac_ * rNormHi;
+            // Two-point amplitude/phase reconstruction, not a linear blend
+            // (see class comment): for a near-monochromatic signal, r(L) is
+            // ~cosine-shaped in L, r(L) = rho*cos(omega*(L-Ltrue)). Linearly
+            // blending rNormLo and rNormHi is a chord under that concave
+            // arc and UNDERESTIMATES the true peak rho -- empirically, at
+            // this project's own default 47.4kHz/200kHz (frac=0.219), it
+            // actually scores measurably WORSE than plain nearest-integer
+            // rounding, the opposite of what the fix is supposed to do.
+            // Since omega is known exactly (from targetFreqHz), rho can be
+            // solved for exactly instead: writing rNormHi in terms of
+            // rNormLo and the unknown phase (rHi = rho*cos(theta+omega) =
+            // rNormLo*cos(omega) - rho*sin(theta)*sin(omega)) gives
+            // rho*sin(theta) directly, and rho = sqrt(rNormLo^2 + (rho*sin(theta))^2).
+            const double crossTerm = (rNormLo * cosOmega_ - rNormHi) / sinOmega_;
+            rawMagnitude = std::sqrt(rNormLo * rNormLo + crossTerm * crossTerm);
         } else {
             // Nearest-integer-lag fallback, for the "does the fix matter" check.
             rawMagnitude = (frac_ < 0.5) ? rNormLo : rNormHi;
@@ -151,6 +169,8 @@ private:
     int    lagLo_ = 4;
     int    lagHi_ = 5;
     double frac_  = 0.0;
+    double cosOmega_ = 1.0;
+    double sinOmega_ = 0.0;
     int    windowLen_ = 200;
     bool   fractionalLagEnabled_ = true;
 
