@@ -262,4 +262,4 @@ to drive a correctly-working implementation to chance level.
 
 The ImGui/implot real-time scope (`sigsim_gui`) provides a live view of the signal chain and all three detectors. It allows you to adjust parameters (noise, frequency, filter cutoffs) in real-time and immediately see the effect on the signal and the detectors' bit decisions.
 
-![Interactive Simulation](docs/simulation.png)
+![Simulation](docs/image.png)
