@@ -41,3 +41,37 @@ add_executable(detect_sweep src/detect_sweep.cpp)
 target_link_libraries(detect_sweep PRIVATE sigsim_detect)
 target_compile_options(detect_sweep PRIVATE -Wall -Wextra)
 sigsim_harden_mingw(detect_sweep)
+
+# --- Phase 4: GUI (ImGui + implot real-time scope) ------------------------
+#
+# Built as its own target, independent of the CLI tools above, so a build
+# environment missing glfw3/OpenGL still builds sigsim_dump/detect_dump/
+# detect_sweep fine -- this can't be smoke-tested headlessly (no display),
+# so its own correctness check happens interactively, not in verify.py.
+
+find_package(glfw3 QUIET)
+find_package(OpenGL QUIET)
+if(glfw3_FOUND AND OpenGL_FOUND)
+    add_executable(sigsim_gui
+        src/gui/main.cpp
+        third_party/imgui/imgui.cpp
+        third_party/imgui/imgui_draw.cpp
+        third_party/imgui/imgui_tables.cpp
+        third_party/imgui/imgui_widgets.cpp
+        third_party/imgui/backends/imgui_impl_glfw.cpp
+        third_party/imgui/backends/imgui_impl_opengl3.cpp
+        third_party/implot/implot.cpp
+        third_party/implot/implot_items.cpp
+    )
+    target_include_directories(sigsim_gui PRIVATE
+        include
+        src/gui
+        third_party/imgui
+        third_party/imgui/backends
+        third_party/implot)
+    target_link_libraries(sigsim_gui PRIVATE sigsim_detect glfw OpenGL::GL)
+    target_compile_options(sigsim_gui PRIVATE -Wall -Wextra)
+    sigsim_harden_mingw(sigsim_gui)
+else()
+    message(STATUS "glfw3/OpenGL not found -- skipping sigsim_gui target (CLI tools still build)")
+endif()

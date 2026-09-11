@@ -56,6 +56,7 @@ public:
     void reset() override {
         x1_ = x2_ = 0.0;
         y1_ = y2_ = 0.0;
+        lastBandpassOutput_ = 0.0;
         envelope_.reset(0.0);
         peak_.reset();
     }
@@ -64,6 +65,7 @@ public:
         const double y = b0_ * adcVolts + b1_ * x1_ + b2_ * x2_ - a1_ * y1_ - a2_ * y2_;
         x2_ = x1_; x1_ = adcVolts;
         y2_ = y1_; y1_ = y;
+        lastBandpassOutput_ = y;
 
         const double rectified = std::fabs(y);
         const double env = envelope_.next(rectified);
@@ -77,6 +79,11 @@ public:
 
     const char* name() const override { return "biquad"; }
 
+    // Not part of IDetector -- the Phase 4 scope plots the raw bandpass
+    // waveform (pre-rectify/envelope) alongside the envelope itself, which
+    // DetectorOutput alone doesn't carry.
+    double lastBandpassOutput() const { return lastBandpassOutput_; }
+
 private:
     // sigsim::AnalogFrontEnd::configure() takes a cutoff frequency, not a
     // time constant directly; convert tau -> the equivalent one-pole cutoff
@@ -89,6 +96,7 @@ private:
     DetectorParams p_;
     double b0_ = 0.0, b1_ = 0.0, b2_ = 0.0, a1_ = 0.0, a2_ = 0.0;
     double x1_ = 0.0, x2_ = 0.0, y1_ = 0.0, y2_ = 0.0;
+    double lastBandpassOutput_ = 0.0;
 
     sigsim::AnalogFrontEnd envelope_;
     PeakTracker peak_;

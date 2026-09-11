@@ -6,10 +6,9 @@ through a single-pole RC anti-alias filter, through an N-bit ADC
 quantizer, with a slowly-fading amplitude envelope and a 500-baud-style
 on/off test modulation — plus three independent bit detectors (biquad
 bandpass, Goertzel, autocorrelation) scored against ground truth. This is
-deliberately **signal source + detectors, no GUI yet**. Everything is
+deliberately **includes a real-time ImGui/implot scope**. Everything is
 verified from the command line first (`tools/verify.py`), so correctness
-doesn't depend on Dear ImGui/implot ever getting wired up (that's the next
-phase — see [Not in this deliverable](#not-in-this-deliverable)).
+doesn't depend on the GUI, but the GUI provides a live visual test bench.
 
 ## Build
 
@@ -25,11 +24,13 @@ Produces three CLIs:
 | `build/sigsim_dump` | Dumps the raw signal chain (no detectors) as CSV |
 | `build/detect_dump` | Dumps the signal chain **and** all three detectors' output per sample, as CSV |
 | `build/detect_sweep` | Headless BER-vs-parameter sweep — the actual biquad/Goertzel/autocorrelation comparison |
+| `build/sigsim_gui` | **Real-time interactive scope** showing the signal chain and all detectors live |
 
 ```
 ./build/sigsim_dump --help
 ./build/detect_dump --help
 ./build/detect_sweep --help
+./build/sigsim_gui
 ```
 
 Example: default parameters, 25ms, to a file:
@@ -257,9 +258,8 @@ carrier cycles (envelope/block/window) against a peak-normalized
 threshold, so 200mV of noise (10x the 20mV carrier) isn't actually enough
 to drive a correctly-working implementation to chance level.
 
-## Not in this deliverable
+## Interactive GUI (Phase 4)
 
-The ImGui/implot real-time scope (GUI) is the next phase, built on top of
-`SignalChain::step()` and the `IDetector` implementations here — signal
-chain, all three detectors, and the headless BER comparison harness
-(`detect_sweep`) are already in place and verified.
+The ImGui/implot real-time scope (`sigsim_gui`) provides a live view of the signal chain and all three detectors. It allows you to adjust parameters (noise, frequency, filter cutoffs) in real-time and immediately see the effect on the signal and the detectors' bit decisions.
+
+![Interactive Simulation](docs/simulation.png)

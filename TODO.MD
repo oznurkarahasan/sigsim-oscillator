@@ -110,9 +110,71 @@ too easy for a correctly-working implementation — all three detectors get
 real processing gain from integrating over many carrier cycles against a
 peak-normalized threshold, documented in `verify.py`'s docstring.)
 
+## Phase 4 — GUI (ImGui + implot real-time scope): COMPLETE, verified visually
+
+Installed `mingw-w64-ucrt-x86_64-glfw`. Vendored `third_party/imgui`
+(`v1.89.9-docking`) and `third_party/implot` (`v0.16`) — pinned to that
+specific pair deliberately: implot v0.16 doesn't compile against imgui's
+current docking tip (imgui's internal API changed, e.g. `ImFont::FontSize`
+renamed, `IM_OFFSETOF`/`IM_FLOOR` moved), so the versions must be matched
+to the same era. Built:
+- `include/detect/BiquadDetector.h` gained `lastBandpassOutput()` (not part
+  of `IDetector`) so the scope can plot the raw bandpass waveform, not just
+  the post-envelope magnitude.
+- `src/gui/RingBuffer.h` — fixed-capacity circular buffer (standard ImPlot
+  "ScrollingBuffer" idiom: plain array + offset, no per-push shifting).
+- `src/gui/ScopeState.h` — owns `SignalChain` + all 3 detectors + their
+  `BitScorer`s (with the same per-detector latency compensation as
+  `detect_sweep`) + a `RollingBer` (trailing-200-symbol BER) + all 12 scope
+  ring buffers; `advance()` is the only per-sample entry point.
+- `src/gui/main.cpp` — GLFW/OpenGL3 bootstrap, wall-clock accumulator frame
+  loop (fixed step at Fs, catch-up clamped to ~5 frames' worth of real
+  time — not literally "5 samples", which would crawl at 200kHz), full
+  control panel (every `Params`/`DetectorParams` field, grouped, Run/Pause/
+  Reset, live rolling-BER readout), and the 6-subplot scope panel.
+- `CMakeLists.txt`: `find_package(glfw3)`/`find_package(OpenGL)` gate the
+  `sigsim_gui` target so the CLI tools keep building regardless.
+
+### Real bug found and fixed: ImPlot axes don't continuously auto-fit inside a subplot grid
+
+Verified via direct screenshot testing (`PrintWindow` capture, bypassing
+window focus/z-order — this machine has other concurrent, unrelated
+sessions active, which repeatedly interfered with naive full-screen
+screenshots and even caused real slider-drag drift when the GUI window
+happened to be under a stray cursor). Symptom: control panel and axis
+labels/legends rendered correctly, and direct instrumentation confirmed
+the ring buffers held fully correct, continuously-growing real data — but
+no line was ever visible on any of the 6 plots, and the X-axis stayed
+stuck near its very-first-frame range instead of tracking the scrolling
+window.
+
+Root cause: without `ImPlotAxisFlags_AutoFit` explicitly passed to
+`ImPlot::SetupAxes()` on every `BeginPlot`, axes *inside a subplot grid*
+only fit once (against whichever frame first established that axis,
+often before real data existed) and then hold that range forever — real,
+correct, continuously-scrolling data silently falls outside a fixed,
+stale view. Isolated by comparing one plot with the flag against five
+without it, fed identical data side by side in the same window. Fixed by
+adding `ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_AutoFit,
+ImPlotAxisFlags_AutoFit)` as the first call inside every `BeginPlot` block.
+
+Verified visually afterward (`PrintWindow` capture): all 6 subplots render
+live, correct, continuously-scrolling data — ADC input (adc_v vs ideal_v),
+biquad bandpass + envelope, Goertzel step plot, autocorrelation magnitude,
+fade multiplier, and the 4-row stacked bit-decision plot all confirmed.
+
+### Not yet done for Phase 4
+
+Interactive acceptance pass beyond the one screenshot round: confirming
+each control-panel slider visibly changes its subplot within one frame,
+Run/Pause/Reset behavior under real interaction, and a CPU-usage check
+specifically on autocorrelation (confirm the O(1)-per-sample sliding-
+window implementation, not an O(W) recompute, holds up live at
+200k samples/sec) — deferred because reliable interactive testing on this
+shared machine needs a real mouse, not the screenshot-only automation used
+so far.
+
 ## Not yet done
 
-- **Phase 4** — ImGui + implot real-time GUI scope (needs GLFW3/OpenGL dev
-  packages + a display; can't be verified headlessly per the plan itself).
 - **Phase 5** — packaging: README update to remove completed items from
   "Not in this deliverable", final smoke-test sequence, zip.
