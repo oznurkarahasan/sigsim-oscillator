@@ -62,6 +62,12 @@ public:
         dcTrack_.configure(p_.targetFreqHz / 20.0, p_.sampleRateHz);
 
         peak_.configure(p_.peakTauMs, p_.sampleRateHz);
+        // Tracks the RECENT PEAK of sumXX_ itself (signal power, volts^2),
+        // same AGC timescale as peak_. Used below to tell "real but
+        // vanishingly small energy" apart from "no real energy at all" in
+        // a scale-invariant way -- see the comment at its use site for why
+        // this is needed on top of the plain min-energy floor.
+        powerPeak_.configure(p_.peakTauMs, p_.sampleRateHz);
         reset();
     }
 
@@ -73,6 +79,7 @@ public:
         eLo_ = eHi_ = 0.0;
         dcTrack_.reset(0.0);
         peak_.reset();
+        powerPeak_.reset();
     }
 
     // Test-only hook (Phase 3 acceptance criteria, 3.9): forces the nearest
@@ -97,10 +104,59 @@ public:
 
         ++idx_;
 
+        // Bug fix (part 1 of 2): a min-energy floor alone isn't enough --
+        // see part 2 below for why. This still helps for the last stretch
+        // where sumXX_/eLo_/eHi_ really have decayed into pure floating-
+        // point cancellation residue (~1e-17..1e-8) rather than real
+        // signal, and the old `> 1e-12` guard on the *combined* norm let
+        // those through (normLo_ was routinely ~1e-7..1e-8 there, above
+        // it) even though the underlying energies are numerical noise.
+        constexpr double kMinEnergyV2 = 1e-9;
+        const bool hasEnergyLo = sumXX_ > kMinEnergyV2 && eLo_ > kMinEnergyV2;
+        const bool hasEnergyHi = sumXX_ > kMinEnergyV2 && eHi_ > kMinEnergyV2;
         const double normLo = std::sqrt(std::max(sumXX_, 0.0) * std::max(eLo_, 0.0));
         const double normHi = std::sqrt(std::max(sumXX_, 0.0) * std::max(eHi_, 0.0));
-        const double rNormLo = normLo > 1e-12 ? rLo_ / normLo : 0.0;
-        const double rNormHi = normHi > 1e-12 ? rHi_ / normHi : 0.0;
+
+        // Bug fix (part 2 of 2), the actual root cause: right after the
+        // carrier stops, dcTrack_ (the AC-coupling low-pass) hasn't fully
+        // settled to the new DC level yet -- its own transient decay is
+        // slow relative to the ~4-5 sample lag used for correlation (its
+        // cutoff is targetFreqHz/20, i.e. an RC time constant several
+        // times longer than one lag step). Over a handful of samples, a
+        // slowly-decaying near-DC residual looks nearly IDENTICAL to
+        // itself shifted by that short lag -- x[n] =~ x[n-lag] -- which
+        // drives r(lag) up toward sqrt(sumXX_*e(lag)), i.e. a correlation
+        // ratio near the maximum of 1.0. This is real signal (not
+        // floating-point noise, confirmed by its smooth exponential
+        // decay), so a min-energy floor can't distinguish it -- by the
+        // time its *absolute* energy is small enough to floor out, it has
+        // already read as "carrier present" for most of the off-gap
+        // (reproduced empirically: shrinking autocorrWindowMs shortened
+        // but never eliminated this, because it isn't a window-forgetting
+        // problem at all).
+        //
+        // Fix: the correlation RATIO is scale-invariant by design (that's
+        // the whole point of normalizing by norm), so it cannot by itself
+        // tell "a full-amplitude carrier" from "a tiny near-DC transient
+        // that happens to correlate perfectly with itself". What's
+        // missing is an ABSOLUTE check: is there currently as much signal
+        // POWER as when the carrier was actually last on? powerPeak_
+        // tracks the recent peak of sumXX_ itself (same AGC timescale as
+        // peak_) and update() returns sumXX_ as a fraction of that peak.
+        // Once the carrier turns off, sumXX_ collapses to a small
+        // fraction of the tracked peak power almost immediately (unlike
+        // the ratio, which stays pinned near 1.0) -- gating on that
+        // fraction rejects the quasi-DC lock-in while still passing
+        // genuine weak-but-real carrier energy (which sits close to peak
+        // power, not a small fraction of it).
+        constexpr double kMinPowerFrac = 0.05;
+        const double powerFrac = powerPeak_.update(std::max(sumXX_, 0.0));
+        const bool hasPower = powerFrac > kMinPowerFrac;
+
+        const bool validLo = hasEnergyLo && hasPower;
+        const bool validHi = hasEnergyHi && hasPower;
+        const double rNormLo = validLo ? rLo_ / normLo : 0.0;
+        const double rNormHi = validHi ? rHi_ / normHi : 0.0;
 
         double rawMagnitude;
         if (fractionalLagEnabled_) {
@@ -184,6 +240,7 @@ private:
     double eLo_ = 0.0, eHi_ = 0.0;
 
     PeakTracker peak_;
+    PeakTracker powerPeak_;
 };
 
 } // namespace detect
