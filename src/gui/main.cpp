@@ -57,7 +57,11 @@ void drawControlPanel(ScopeState& scope, bool& running, int& scopeWindowMs) {
     if (ImGui::Button("Reset")) {
         scope.params() = sigsim::Params{};
         scope.detectorParams() = detect::DetectorParams{};
+        scopeWindowMs = 20;
         scope.reconfigure();
+        // reconfigure() re-applies the OLD sample count (see comment below on
+        // fsChanged) -- resync it to scopeWindowMs against the now-default Fs.
+        scope.setWindowSamples(static_cast<int>(scopeWindowMs / 1000.0 * scope.params().sampleRateHz));
     }
 
     ImGui::Separator();
@@ -76,8 +80,15 @@ void drawControlPanel(ScopeState& scope, bool& running, int& scopeWindowMs) {
     sigsim::Params& p = scope.params();
     detect::DetectorParams& dp = scope.detectorParams();
 
+    // Sample rate Fs is the one control-panel field the scope window's
+    // sample count depends on but isn't itself: the "Scope window (ms)"
+    // slider above only recomputes samples when IT is dragged, so without
+    // this, changing Fs silently stretches/shrinks the actual on-screen
+    // time span while that slider keeps showing its last, now-wrong value.
+    bool fsChanged = false;
     if (ImGui::CollapsingHeader("ADC / sampling", ImGuiTreeNodeFlags_DefaultOpen)) {
-        changed |= sliderD("Sample rate Fs (Hz)", p.sampleRateHz, 50000.0f, 500000.0f, ImGuiSliderFlags_Logarithmic);
+        fsChanged = sliderD("Sample rate Fs (Hz)", p.sampleRateHz, 50000.0f, 500000.0f, ImGuiSliderFlags_Logarithmic);
+        changed |= fsChanged;
         changed |= sliderI("Oversample", p.oversample, 1, 64);
         changed |= sliderI("ADC bits", p.adcBits, 4, 16);
         changed |= sliderD("Vref (V)", p.vrefV, 0.5f, 5.0f);
@@ -122,6 +133,12 @@ void drawControlPanel(ScopeState& scope, bool& running, int& scopeWindowMs) {
     // 4.6: any slider change reconfigures SignalChain/detectors in place
     // (safely re-callable, 3.2) rather than reconstructing anything.
     if (changed) scope.reconfigure();
+    // Fs moved: reconfigure() just re-applied the sample count from BEFORE
+    // this frame's change, so redo it now against the new Fs to keep the
+    // scope's actual time span matching what "Scope window (ms)" displays.
+    if (fsChanged) {
+        scope.setWindowSamples(static_cast<int>(scopeWindowMs / 1000.0 * p.sampleRateHz));
+    }
 
     ImGui::EndChild();
 }
