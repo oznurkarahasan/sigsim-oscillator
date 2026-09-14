@@ -53,6 +53,12 @@ public:
     void configure(const sigsim::Params& p, const detect::DetectorParams& dp, int windowSamples) {
         p_ = p;
         dp_ = dp;
+        // dp_.sampleRateHz has no GUI slider of its own -- it must always
+        // track the signal chain's actual Fs (the "Sample rate Fs" slider
+        // drives p_.sampleRateHz only). Without this, every detector's
+        // filter/bin/window math silently desyncs from the real sample
+        // rate the instant Fs is moved off DetectorParams's 200000 default.
+        dp_.sampleRateHz = p_.sampleRateHz;
 
         chain_.configure(p_);
         biquad_.configure(dp_);
